@@ -1,8 +1,3 @@
-"""
-Shared threat-intel collector: fetch feeds and store IPs in Redis.
-Used by the API admin panel and optionally by the CLI script.
-Redis key format: ip:<ip> with first_seen, last_seen (unix), score, count, sources.
-"""
 import os
 import re
 import time
