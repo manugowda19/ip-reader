@@ -150,37 +150,69 @@ redis-server --version  # Should show 5+
 ## Project Structure
 
 ```
-ip-reader-main/
-├── README.md                              # This file
-├── docker-compose.yml                     # Optional: Redis via Docker
+ip-reader/
+├── README.md                          # Project documentation
+├── docker-compose.yml                 # Optional: Redis via Docker
+├── dump.rdb                           # Redis data snapshot
+├── .gitignore
 │
-├── backend/                               # Flask API + Collector
-│   ├── api.py                             # Main Flask server (all API endpoints)
-│   ├── collector.py                       # Feed fetcher + Redis storage logic
-│   └── requirements.txt                   # Python dependencies
+├── backend/                           # Python Backend
+│   ├── api.py                         # Flask REST API (all endpoints)
+│   ├── collector.py                   # Feed fetcher + Redis storage + scoring
+│   ├── requirements.txt               # Python dependencies
+│   └── package-lock.json
 │
-├── frontend2/frountend/                   # React + Vite Frontend
-│   ├── package.json                       # Node dependencies
-│   ├── vite.config.ts                     # Vite config with API proxy to Flask
-│   ├── src/
-│   │   ├── main.tsx                       # App entry point + React Router setup
-│   │   ├── pages/
-│   │   │   ├── Dashboard.tsx              # Dashboard (IP search + results)
-│   │   │   └── Admin.tsx                  # Admin panel
-│   │   └── layouts/
-│   │       └── AdminLayout.tsx            # Admin page layout
-│   ├── components/                        # React components
-│   │   ├── ip-search.tsx                  # IP search input
-│   │   ├── ip-result-panel.tsx            # Results + WHOIS + Geo + Map
-│   │   ├── stats-panel.tsx                # Stats cards
-│   │   ├── malicious-ips-table.tsx        # Top 10 malicious IPs
-│   │   ├── activity-feed.tsx              # Recent activity log
-│   │   ├── dashboard-header.tsx           # Navigation header
-│   │   └── ui/                            # shadcn/ui components
-│   ├── hooks/                             # Custom React hooks
-│   └── lib/
-│       ├── backend.ts                     # Helper to proxy requests to Flask
-│       └── utils.ts                       # Utility functions
+└── frountend/                         # Next.js + React Frontend
+    ├── index.html                     # App entry point
+    ├── package.json                   # Node dependencies
+    ├── package-lock.json
+    ├── pnpm-lock.yaml
+    ├── tsconfig.json                  # TypeScript config
+    ├── vite.config.ts                 # Vite bundler config
+    ├── vite-env.d.ts
+    ├── postcss.config.mjs
+    ├── components.json                # shadcn/ui config
+    ├── .env.example                   # Environment variables template
+    │
+    ├── app/
+    │   └── globals.css                # Global styles
+    │
+    ├── src/
+    │   ├── main.tsx                   # React entry point
+    │   ├── pages/
+    │   │   ├── Dashboard.tsx          # IP search + results page
+    │   │   └── Admin.tsx              # Admin panel page
+    │   └── layouts/
+    │       └── AdminLayout.tsx        # Admin page layout wrapper
+    │
+    ├── components/
+    │   ├── ip-search.tsx              # IP search input component
+    │   ├── ip-result-panel.tsx        # Score + sources + WHOIS + map
+    │   ├── stats-panel.tsx            # Stats cards (total, malicious, clean)
+    │   ├── malicious-ips-table.tsx    # Top 10 malicious IPs table
+    │   ├── activity-feed.tsx          # Recent lookup activity log
+    │   ├── dashboard-header.tsx       # Navigation header
+    │   ├── theme-provider.tsx         # Dark/light theme provider
+    │   └── ui/                        # shadcn/ui component library
+    │       ├── button.tsx
+    │       ├── card.tsx
+    │       ├── table.tsx
+    │       ├── badge.tsx
+    │       ├── input.tsx
+    │       ├── dialog.tsx
+    │       ├── tabs.tsx
+    │       └── ...and more
+    │
+    ├── lib/
+    │   ├── backend.ts                 # Flask API proxy helper
+    │   └── utils.ts                   # Shared utilities
+    │
+    ├── hooks/
+    │   ├── use-mobile.ts              # Mobile detection hook
+    │   └── use-toast.ts               # Toast notification hook
+    │
+    └── styles/
+        └── globals.css                # Additional global styles
 ```
 
 ---
@@ -234,23 +266,32 @@ Keep this terminal open. Redis must be running for the application to work.
 redis-cli ping
 # Should return: PONG
 ```
-# Total IPs in database
 ```bash
+
+Total IPs in database
+
 DBSIZE
+
 bash# Top 10 HIGHEST scoring IPs (most dangerous)
 ZREVRANGE ip_scores 0 9 WITHSCORES
+
 bash# Bottom 10 LOWEST scoring IPs (least dangerous)
 ZRANGE ip_scores 0 9 WITHSCORES
+
 bash# IPs with score between 70-100 (Malicious)
 ZRANGEBYSCORE ip_scores 70 100 WITHSCORES
+
 bash# IPs with score between 40-69 (Suspicious)
 ZRANGEBYSCORE ip_scores 40 69 WITHSCORES
+
 bash# IPs with score between 1-39 (Low Risk)
 ZRANGEBYSCORE ip_scores 1 39 WITHSCORES
+
 bash# Count of each category
 ZCOUNT ip_scores 70 100
 ZCOUNT ip_scores 40 69
 ZCOUNT ip_scores 1 39
+
 bash# Full details of a specific IP
 HGETALL ip:185.220.101.5
 ```
@@ -496,30 +537,6 @@ score lower AND eventually be auto-deleted from Redis.
 ```
 Final Score = (0.40 × Peak Score) + (0.40 × Current Score) + (0.20 × Decay Score)
 ```
-
-### Component Breakdown
-
-**Peak Score (40%)**
-```python
-peak_score = min(100, round(20 * math.log2(peak_count + 1)))
-```
-Uses logarithmic scale so each additional source has diminishing impact.
-Based on `peak_count` which never decreases — protects against feed instability.
-
-**Current Score (40%)**
-```python
-absolute = min(100, round(20 * math.log2(source_count + 1)))
-relative = min(100, round((source_count / total_feeds) * 100))
-current_score = round((0.5 * absolute) + (0.5 * relative))
-```
-Combines absolute count (log scale) with relative spread (ratio) equally.
-
-**Time Decay (20%)**
-```python
-days_since = (now - last_seen_timestamp) / 86400
-decay_score = max(0, round(100 * (1 - (days_since / 30))))
-```
-Linearly decays from 100 to 0 over 30 days of silence.
 
 ### Score Reference Table
 
