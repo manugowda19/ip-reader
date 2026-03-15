@@ -471,31 +471,6 @@ and memory usage under control.
 Final Score = (0.40 × Peak Score) + (0.40 × Current Score) + (0.20 × Decay Score)
 ```
 
-### Component Breakdown
-
-**Peak Score (40%)**
-```python
-peak_score = min(100, round(20 * math.log2(peak_count + 1)))
-```
-Uses logarithmic scale so each additional source has diminishing impact.
-Based on `peak_count` which never decreases — protects against feed instability.
-
-**Current Score (40%)**
-```python
-absolute = min(100, round(20 * math.log2(source_count + 1)))
-relative = min(100, round((source_count / total_feeds) * 100))
-current_score = round((0.5 * absolute) + (0.5 * relative))
-```
-Combines absolute count (log scale) with relative spread (ratio) equally.
-Captures both raw severity and how widespread the threat is right now.
-
-**Time Decay (20%)**
-```python
-days_since = (now - last_seen_timestamp) / 86400
-decay_score = max(0, round(100 * (1 - (days_since / 30))))
-```
-Linearly decays from 100 to 0 over 30 days of silence.
-Ensures stale threats lose urgency without being immediately forgotten.
 
 ### Score Examples
 
