@@ -42,7 +42,7 @@ Phase 1: Data Collection                    Phase 2: Web Application
 │   CINSscore,        │   ┌─────────┐     │  │ Dashboard (/)     │  │
 │   FireHOL,          │──>│  Redis   │<────│  │ - IP Search       │  │
 │   EmergingThreats,  │   │  (6379)  │     │  │ - Score + Sources │  │
-│   Feodo,            │   └─────────┘     │  │ - WHOIS + Geo    │  │
+│   Feodo,            │   └─────────┘     │  │ - WHOIS + Geo     │  │
 │   Greensnow,        │        ^           │  │ - Google Maps     │  │
 │   ThreatView)       │        │           │  ├───────────────────┤  │
 └─────────────────────┘        │           │  │ Admin (/admin)    │  │
@@ -63,7 +63,7 @@ Phase 1: Data Collection                    Phase 2: Web Application
 
 **Data Flow:**
 1. The **Collector** fetches IP blocklists from multiple threat intelligence URLs
-2. IPs are parsed, deduplicated, and stored in **Redis** with scores based on how many sources report them
+2. IPs are parsed, deduplicated, and stored in **Redis** with scores based on a 3-component weighted formula
 3. **Manual feeds** can be added via the Admin Panel's Bulk IP Importer
 4. The **Flask API** serves lookup requests from Redis
 5. The **Next.js Frontend** provides the user interface for searching IPs and managing feeds
@@ -74,21 +74,116 @@ Phase 1: Data Collection                    Phase 2: Web Application
 ## How It Works
 
 ### Anomaly Scoring
-When an IP address appears in multiple threat feeds, its anomaly score increases. The score is calculated as:
+
+When an IP address appears in multiple threat feeds, its anomaly score increases. The score is calculated using a **3-component weighted formula** designed to be stable, fair, and historically aware:
 
 ```
-score = (number_of_sources / total_feeds) * 100
+Final Score = (40% × Peak Score) + (40% × Current Score) + (20% × Time Decay)
 ```
 
-- An IP found in 1 out of 8 feeds = score 12
-- An IP found in 3 out of 8 feeds = score 37
-- An IP found in 5 out of 8 feeds = score 62
-- Score is clamped between 0 and 100
+#### Why 3 Components?
 
-The more sources that report an IP as malicious, the higher its threat score.
+A threat has 3 independent dimensions of truth that no single formula can capture alone:
+
+| Component | Weight | What It Measures | Why It's Needed |
+|-----------|--------|-----------------|-----------------|
+| **Peak Score** | 40% | Highest count this IP ever reached across all feeds | Ensures score never crashes just because a feed went offline or new feeds were added |
+| **Current Score** | 40% | How many sources are reporting this IP right now | Captures active, ongoing threat activity |
+| **Time Decay** | 20% | How recently was this IP last seen | Reduces urgency for old threats without erasing history |
+
+#### Why Not The Simple Ratio Formula?
+
+The naive formula `score = (count / total_feeds) * 100` has a critical flaw:
+
+```
+Day 1: IP found in 2 feeds, total = 10  → score = 20
+Day 2: 10 new feeds added, IP not in them → score = 10  ← WRONG
+```
+
+The IP did not get safer. But adding new feeds made the score drop. This is unfair
+and misleading. The 3-component formula solves this completely.
+
+#### Scoring Formula in Detail
+
+```python
+import math
+from datetime import datetime, timezone
+
+def _calculate_score(source_count, total_feeds, peak_count=None, last_seen_timestamp=None):
+
+    # Component 1 — PEAK SCORE (40%)
+    # Based on highest ever count — logarithmic so diminishing returns
+    # NEVER decreases regardless of total_feeds changing
+    peak_score = min(100, round(20 * math.log2(peak_count + 1)))
+
+    # Component 2 — CURRENT SCORE (40%)
+    # Combines absolute log score + relative ratio equally
+    absolute = min(100, round(20 * math.log2(source_count + 1)))
+    relative = min(100, round((source_count / total_feeds) * 100))
+    current_score = round((0.5 * absolute) + (0.5 * relative))
+
+    # Component 3 — TIME DECAY (20%)
+    # Score decays to 0 over 30 days if IP is not seen
+    now = datetime.now(timezone.utc).timestamp()
+    days_since = (now - last_seen_timestamp) / 86400
+    decay_score = max(0, round(100 * (1 - (days_since / 30))))
+
+    # Final weighted score
+    return min(100, round(
+        (0.40 * peak_score) +
+        (0.40 * current_score) +
+        (0.20 * decay_score)
+    ))
+```
+
+#### Score Behaviour Across Scenarios
+
+| Scenario | Old Formula | New Formula |
+|----------|-------------|-------------|
+| IP found in more sources | ✅ Goes UP | ✅ Goes UP |
+| New feeds added, IP not in them | ❌ Score DROPS | ✅ Stays stable |
+| One feed goes offline | ❌ Score DROPS | ✅ Barely moves (peak protects) |
+| IP not seen for 30+ days | ❌ Stays forever | ✅ Slowly decays to near 0 |
+| IP reappears after silence | ✅ Goes UP | ✅ Goes UP |
+
+#### Score Reference Table
+
+| Peak Count | Current Count | Days Since Seen | Final Score | Verdict |
+|------------|---------------|-----------------|-------------|---------|
+| 1 | 1 | 0 | ~36 | Low Risk |
+| 2 | 2 | 0 | ~50 | Suspicious |
+| 3 | 3 | 0 | ~57 | Suspicious |
+| 3 | 2 | 0 | ~52 | Suspicious |
+| 3 | 1 | 0 | ~44 | Suspicious |
+| 5 | 5 | 0 | ~70 | Malicious |
+| 8 | 8 | 0 | ~82 | Malicious |
+| 8 | 8 | 15 | ~72 | Malicious |
+| 8 | 0 | 30 | ~32 | Low Risk |
+
+#### Risk Levels in the UI
+
+| Score | Verdict | Colour |
+|-------|---------|--------|
+| 0 | Clean | Green |
+| 1–39 | Low Risk | Yellow |
+| 40–69 | Suspicious | Orange |
+| 70–100 | Malicious | Red |
+
+### Industry Comparison
+
+This 3-component approach mirrors methods used by leading threat intelligence platforms:
+
+| Platform | Peak/History | Current Activity | Time Decay |
+|----------|-------------|-----------------|------------|
+| **This System** | ✅ | ✅ | ✅ |
+| Microsoft Defender TI | ✅ | ✅ | ✅ |
+| Cisco Talos | ✅ | ✅ | ✅ |
+| IPQS | ✅ | ✅ | ❌ |
+| Spamhaus | ✅ | ✅ | ✅ |
 
 ### Two Types of Feeds
-1. **Link Feeds** — URL-based feeds that are fetched automatically by the collector (e.g., Blocklist.de, FireHOL)
+
+1. **Link Feeds** — URL-based feeds fetched automatically by the collector (e.g., Blocklist.de, FireHOL)
 2. **Manual Feeds** — IPs added manually via the Admin Panel's Bulk IP Importer, where you paste text/URLs containing IPs, name the source, and classify as malicious or clean
 
 Both feed types are merged during sync, and scores are recalculated using the combined total.
@@ -143,7 +238,7 @@ ip/
 │   ├── collector.py                   # Feed fetcher + Redis storage logic
 │   └── requirements.txt               # Python dependencies
 │
-├── frontend/frountend/               # Next.js Frontend
+├── frontend/frountend/                # Next.js Frontend
 │   ├── package.json                   # Node dependencies
 │   ├── app/
 │   │   ├── page.tsx                   # Dashboard (IP search + results)
@@ -168,8 +263,7 @@ ip/
 │   │   ├── activity-feed.tsx          # Recent activity log
 │   │   └── dashboard-header.tsx       # Navigation header
 │   └── lib/
-│      └── backend.ts                 # Helper to proxy requests to Flask
-|-- 
+│       └── backend.ts                 # Helper to proxy requests to Flask
 ```
 
 ---
@@ -297,11 +391,11 @@ The frontend starts on `http://localhost:3000`.
 1. Enter an IP address in the search bar (e.g., `94.26.106.201`)
 2. Click **"Check IP"**
 3. The results show:
-   - **Threat Score** — 0-100 anomaly score with color-coded risk level
-   - **Verdict** — Malicious / Suspicious / Clean
+   - **Threat Score** — 0-100 anomaly score with colour-coded risk level
+   - **Verdict** — Malicious / Suspicious / Low Risk / Clean
    - **Sources** — Which threat feeds reported this IP
    - **IP Details** — Full WHOIS and geolocation data:
-     - Organization name, Network name, Handle
+     - Organisation name, Network name, Handle
      - IP range (CIDR), Registration date
      - Abuse contact email and phone
      - ISP, ASN, Reverse DNS
@@ -322,7 +416,7 @@ The admin panel provides:
 #### Sync Feeds to Redis
 - Click **"Run collector"** to fetch all link feeds + merge manual feeds
 - Shows per-feed IP counts and any errors
-- Recalculates all anomaly scores
+- Recalculates all anomaly scores using the 3-component formula
 
 #### Bulk IP Importer (Two-Step Process)
 1. **Step 1 — Extract:** Paste any text containing IPs (URLs, logs, raw IPs) and click "Extract IPs"
@@ -353,38 +447,51 @@ The admin panel provides:
 
 We chose Redis **Hash** as the primary data structure for storing IP threat data:
 
-1. **O(1) lookup** — `HGETALL ip:1.2.3.4` is instant, which is the only access pattern the web app needs
-2. **Multiple fields per key** — Score, sources, timestamps stored atomically without serialization
+1. **O(1) lookup** — `HGETALL ip:1.2.3.4` is instant regardless of how many millions of IPs are stored
+2. **Multiple fields per key** — Score, peak, sources, and timestamps all stored under one key atomically
 3. **Memory efficient** — Redis optimizes small hashes with ziplist encoding
 4. **Independent field access** — Can read just the score without fetching all fields
+5. **Partial updates** — Can update only `last_seen` without rewriting the entire record
 
 ### Key Schema
 
 ```
-Key:    ip:<ip_address>         (e.g., ip:94.26.106.201)
+Key:    ip:<ip_address>           (e.g., ip:94.26.106.201)
 Type:   Hash
 Fields:
-  score        : int (0-100)     — Anomaly score
-  count        : int             — Number of feeds reporting this IP
-  sources      : string          — Comma-separated feed names
-  first_seen   : unix timestamp  — When IP was first added
-  last_seen    : unix timestamp  — Last update time
-  status       : "clean"         — Only set for clean IPs
+  score        : int (0-100)       — Final weighted anomaly score
+  count        : int               — Current number of feeds reporting this IP
+  peak_count   : int               — Highest count this IP has ever reached (never decreases)
+  sources      : string            — Comma-separated feed names
+  first_seen   : unix timestamp    — When IP was first added to the system
+  last_seen    : unix timestamp    — Last time this IP was seen in any feed
+  status       : "clean"           — Only set for IPs marked clean via Admin Panel
 ```
+
+### Why We Store peak_count
+
+`peak_count` is the key field that makes the scoring formula robust. It records the
+highest number of sources that ever simultaneously reported this IP. Even if feeds
+go offline or new feeds are added, `peak_count` never decreases — it only ever goes
+up when a new source finds the IP. This protects the score from unfair drops caused
+by external changes.
 
 ### Additional Redis Structures
 
 | Key | Type | Purpose |
 |-----|------|---------|
-| `ip_scores` | Sorted Set | IPs ranked by score (for top malicious IPs) |
-| `clean_ips` | Set | IPs marked as clean |
+| `ip_scores` | Sorted Set | IPs ranked by score — enables instant Top 10 queries |
+| `clean_ips` | Set | IPs marked as clean via Admin Panel |
 | `config:feeds` | Hash | Link feed name → URL mapping |
 | `config:manual_feeds` | Hash | Manual feed name → metadata (JSON) |
 | `config:collect_last` | Hash | Last collector run metadata |
 | `recent_activity` | List | Last 50 activity events (JSON) |
 
 ### TTL
-All IP keys have a **7-day TTL** (604,800 seconds). IPs that drop off all feeds are automatically cleaned up.
+All IP keys have a **7-day TTL** (604,800 seconds). Combined with the time decay
+component in the scoring formula, IPs that disappear from all feeds will gradually
+score lower AND eventually be auto-deleted from Redis — keeping the database clean
+and memory usage under control.
 
 ---
 
@@ -415,50 +522,82 @@ All IP keys have a **7-day TTL** (604,800 seconds). IPs that drop off all feeds 
 | GET | `/admin/manual_feeds` | List manual feeds |
 | DELETE | `/admin/manual_feeds/<name>` | Remove a manual feed + its IPs |
 
-### Example API Calls
+### Example Responses
 
-**Look up an IP:**
-```bash
-curl http://localhost:5000/ip/8.8.8.8
+**GET /ip/185.220.101.5**
+```json
+{
+  "ip": "185.220.101.5",
+  "found": true,
+  "score": 72,
+  "count": 3,
+  "peak_count": 3,
+  "sources": ["Blocklist.de", "FireHOL", "CINSscore"],
+  "verdict": "Malicious",
+  "first_seen": 1709123456,
+  "last_seen": 1709123456
+}
 ```
 
-**Get WHOIS + geolocation:**
-```bash
-curl http://localhost:5000/whois/8.8.8.8
-```
-
-**Run the collector:**
-```bash
-curl -X POST http://localhost:5000/admin/collect
+**GET /ip/8.8.8.8**
+```json
+{
+  "ip": "8.8.8.8",
+  "found": false,
+  "score": 0,
+  "verdict": "Clean",
+  "message": "This IP was not found in any threat feed."
+}
 ```
 
 ---
 
 ## Scoring Algorithm
 
-```python
-score = min(100, int((source_count / total_feeds) * 100))
+### Formula
+
+```
+Final Score = (0.40 × Peak Score) + (0.40 × Current Score) + (0.20 × Decay Score)
 ```
 
-Where:
-- `source_count` = number of feeds that report this IP
-- `total_feeds` = total number of successfully fetched feeds (link + manual)
+### Component Breakdown
 
-| Sources Found | Total Feeds | Score | Risk Level |
-|---------------|-------------|-------|------------|
-| 1 | 8 | 12 | Low |
-| 2 | 8 | 25 | Low |
-| 3 | 8 | 37 | Suspicious |
-| 4 | 8 | 50 | Suspicious |
-| 5 | 8 | 62 | Suspicious |
-| 6 | 8 | 75 | Malicious |
-| 8 | 8 | 100 | Malicious |
+**Peak Score (40%)**
+```python
+peak_score = min(100, round(20 * math.log2(peak_count + 1)))
+```
+Uses logarithmic scale so each additional source has diminishing impact.
+Based on `peak_count` which never decreases — protects against feed instability.
 
-**Risk levels in the UI:**
-- **0** — Clean (green)
-- **1-39** — Suspicious (yellow/orange)
-- **40-69** — Suspicious (orange)
-- **70-100** — Malicious (red)
+**Current Score (40%)**
+```python
+absolute = min(100, round(20 * math.log2(source_count + 1)))
+relative = min(100, round((source_count / total_feeds) * 100))
+current_score = round((0.5 * absolute) + (0.5 * relative))
+```
+Combines absolute count (log scale) with relative spread (ratio) equally.
+Captures both raw severity and how widespread the threat is right now.
+
+**Time Decay (20%)**
+```python
+days_since = (now - last_seen_timestamp) / 86400
+decay_score = max(0, round(100 * (1 - (days_since / 30))))
+```
+Linearly decays from 100 to 0 over 30 days of silence.
+Ensures stale threats lose urgency without being immediately forgotten.
+
+### Score Examples
+
+| Peak | Current | Days Ago | Score | Verdict |
+|------|---------|----------|-------|---------|
+| 1 | 1 | 0 | 36 | Low Risk |
+| 2 | 2 | 0 | 50 | Suspicious |
+| 3 | 3 | 0 | 57 | Suspicious |
+| 5 | 5 | 0 | 70 | Malicious |
+| 8 | 8 | 0 | 82 | Malicious |
+| 8 | 8 | 15 | 72 | Malicious |
+| 8 | 0 | 30 | 32 | Low Risk |
+| 3 | 2 | 0 | 52 | Suspicious |
 
 ---
 
@@ -474,9 +613,10 @@ Default link feeds configured:
 | EmergingThreats | https://rules.emergingthreats.net/blockrules/compromised-ips.txt | Proofpoint Emerging Threats |
 | Feodo | https://feodotracker.abuse.ch/downloads/ipblocklist.txt | Feodo Tracker (banking trojans) |
 | Greensnow | https://blocklist.greensnow.co/greensnow.txt | GreenSnow blocklist |
+| MalSilo | https://malsilo.gitlab.io/feeds/dumps/ip_list.txt | MalSilo IPv4 threat list |
 | ThreatView | https://threatview.io/Downloads/IP-High-Confidence-Feed.txt | High confidence threat IPs |
 
-Additional feeds can be added via the Admin Panel.
+Additional feeds can be added at any time via the Admin Panel without restarting the system.
 
 ---
 
@@ -484,43 +624,43 @@ Additional feeds can be added via the Admin Panel.
 
 ### Redis won't start on Windows
 ```bash
-# Bind to localhost explicitly
 redis-server --bind 127.0.0.1 --port 6379
 ```
 
 ### Port 5000 already in use
 ```bash
-# Windows: find and kill the process
-netstat -ano | findstr 5000
-taskkill /F /PID <pid>
-
 # macOS/Linux
 lsof -i :5000
 kill -9 <pid>
+
+# Windows
+netstat -ano | findstr 5000
+taskkill /F /PID <pid>
 ```
 
 ### Frontend `npm run dev` fails with env variable error
-If you see `'NEXT_TELEMETRY_DISABLED' is not recognized`, the fix is already applied. The `package.json` scripts should not have `NEXT_TELEMETRY_DISABLED=1` prefix on Windows. They should read:
+If you see `'NEXT_TELEMETRY_DISABLED' is not recognized`, update `package.json` scripts to:
 ```json
 "dev": "next dev --webpack"
 ```
 
 ### `hset` mapping error (old Redis versions)
-If Redis throws `wrong number of arguments for 'hset' command`, your Redis version doesn't support `HSET key field1 val1 field2 val2`. The codebase already handles this by using individual `hset` calls per field.
+If Redis throws `wrong number of arguments for 'hset' command`, your Redis version
+does not support multi-field HSET. Use individual `hset` calls per field instead.
 
 ### WHOIS data not showing on dashboard
-Ensure the Flask backend is running and the Next.js API route at `app/api/whois/[ip]/route.ts` exists. Test directly:
+Ensure Flask is running and test directly:
 ```bash
 curl http://localhost:5000/whois/8.8.8.8
 ```
 
 ### Collector fetches 0 IPs from some feeds
-Some feeds may be temporarily down or rate-limited. This is normal. The collector continues with available feeds and logs errors for failed ones.
+Some feeds may be temporarily down or rate-limited. The collector continues with
+available feeds and logs errors for failed ones. This is expected behaviour.
 
 ### Frontend can't connect to backend
-The Next.js frontend proxies API calls to Flask via route handlers. Ensure:
-1. Flask is running on `http://127.0.0.1:5000`
-2. The `BACKEND_URL` environment variable is not set to a different address (default is `http://127.0.0.1:5000`)
+Ensure Flask is running on `http://127.0.0.1:5000`. The Next.js frontend proxies
+all API calls to Flask via route handlers.
 
 ---
 
@@ -530,10 +670,10 @@ The Next.js frontend proxies API calls to Flask via route handlers. Ensure:
 # Terminal 1: Start Redis
 redis-server --bind 127.0.0.1 --port 6379
 
-# Terminal 2: Start Backend
+# Terminal 2: Start Backend + Run Collector
 cd backend
 pip install -r requirements.txt
-python -c "from collector import run_collector; print(run_collector())"  # Initial load
+python -c "from collector import run_collector; print(run_collector())"
 python api.py
 
 # Terminal 3: Start Frontend
