@@ -12,16 +12,7 @@ A full-stack IP threat intelligence system that collects malicious IP addresses 
 4. [Prerequisites](#prerequisites)
 5. [Project Structure](#project-structure)
 6. [Setup & Installation](#setup--installation)
-   - [Step 1: Install Redis](#step-1-install-redis)
-   - [Step 2: Start Redis](#step-2-start-redis)
-   - [Step 3: Install Backend Dependencies](#step-3-install-backend-dependencies)
-   - [Step 4: Run the Collector (Initial Data Load)](#step-4-run-the-collector-initial-data-load)
-   - [Step 5: Start the Backend API](#step-5-start-the-backend-api)
-   - [Step 6: Install Frontend Dependencies](#step-6-install-frontend-dependencies)
-   - [Step 7: Start the Frontend](#step-7-start-the-frontend)
 7. [Usage Guide](#usage-guide)
-   - [Dashboard (IP Lookup)](#dashboard-ip-lookup)
-   - [Admin Panel](#admin-panel)
 8. [Redis Data Structure](#redis-data-structure)
 9. [API Endpoints](#api-endpoints)
 10. [Scoring Algorithm](#scoring-algorithm)
@@ -37,7 +28,7 @@ The system is split into two main phases:
 ```
 Phase 1: Data Collection                    Phase 2: Web Application
 ┌─────────────────────┐                    ┌─────────────────────────┐
-│   Threat Feeds      │                    │   Next.js Frontend      │
+│   Threat Feeds      │                    │   React Frontend (Vite) │
 │  (Blocklist.de,     │                    │  ┌───────────────────┐  │
 │   CINSscore,        │   ┌─────────┐     │  │ Dashboard (/)     │  │
 │   FireHOL,          │──>│  Redis   │<────│  │ - IP Search       │  │
@@ -66,7 +57,7 @@ Phase 1: Data Collection                    Phase 2: Web Application
 2. IPs are parsed, deduplicated, and stored in **Redis** with scores based on a 3-component weighted formula
 3. **Manual feeds** can be added via the Admin Panel's Bulk IP Importer
 4. The **Flask API** serves lookup requests from Redis
-5. The **Next.js Frontend** provides the user interface for searching IPs and managing feeds
+5. The **React Frontend** (via Vite dev server proxy) provides the user interface for searching IPs and managing feeds
 6. For each IP lookup, **geolocation** (ip-api.com) and **WHOIS** (rdap.org) data is fetched in real-time
 
 ---
@@ -91,6 +82,24 @@ A threat has 3 independent dimensions of truth that no single formula can captur
 | **Current Score** | 40% | How many sources are reporting this IP right now | Captures active, ongoing threat activity |
 | **Time Decay** | 20% | How recently was this IP last seen | Reduces urgency for old threats without erasing history |
 
+#### Score Behaviour Across Scenarios
+
+| Scenario | Old Formula | New Formula |
+|----------|-------------|-------------|
+| IP found in more sources | Goes UP | Goes UP |
+| New feeds added, IP not in them | Score DROPS | Stays stable |
+| One feed goes offline | Score DROPS | Barely moves (peak protects) |
+| IP not seen for 30+ days | Stays forever | Slowly decays to near 0 |
+| IP reappears after silence | Goes UP | Goes UP |
+
+#### Risk Levels in the UI
+
+| Score | Verdict | Colour |
+|-------|---------|--------|
+| 0 | Clean | Green |
+| 1–39 | Low Risk | Yellow |
+| 40–69 | Suspicious | Orange |
+| 70–100 | Malicious | Red |
 
 ### Two Types of Feeds
 
@@ -107,8 +116,9 @@ Both feed types are merged during sync, and scores are recalculated using the co
 |-----------|-----------|---------|
 | Database | Redis | In-memory IP storage with O(1) lookup |
 | Backend API | Python + Flask | REST API for IP lookup, feed management, collector |
-| Frontend | Next.js 16 + React 19 | Dashboard and Admin UI |
-| UI Components | shadcn/ui + Tailwind CSS | Component library and styling |
+| Frontend | React 19 + Vite | Dashboard and Admin UI (SPA) |
+| Routing | React Router DOM | Client-side page routing |
+| UI Components | shadcn/ui + Tailwind CSS 4 | Component library and styling |
 | Geolocation | ip-api.com (free) | IP location data (no API key needed) |
 | WHOIS | rdap.org (free) | IP ownership and registry data (no API key needed) |
 | Maps | Google Maps Embed | Visual IP location pinpointing |
@@ -140,41 +150,37 @@ redis-server --version  # Should show 5+
 ## Project Structure
 
 ```
-ip/
-├── README.md                          # This file
-├── docker-compose.yml                 # Optional: Redis via Docker
+ip-reader-main/
+├── README.md                              # This file
+├── docker-compose.yml                     # Optional: Redis via Docker
 │
-├── backend/                           # Flask API + Collector
-│   ├── api.py                         # Main Flask server (all API endpoints)
-│   ├── collector.py                   # Feed fetcher + Redis storage logic
-│   └── requirements.txt               # Python dependencies
+├── backend/                               # Flask API + Collector
+│   ├── api.py                             # Main Flask server (all API endpoints)
+│   ├── collector.py                       # Feed fetcher + Redis storage logic
+│   └── requirements.txt                   # Python dependencies
 │
-├── frontend/frountend/                # Next.js Frontend
-│   ├── package.json                   # Node dependencies
-│   ├── app/
-│   │   ├── page.tsx                   # Dashboard (IP search + results)
-│   │   ├── admin/page.tsx             # Admin panel
-│   │   └── api/                       # Next.js API routes (proxy to Flask)
-│   │       ├── ip/[ip]/route.ts       # IP lookup proxy
-│   │       ├── whois/[ip]/route.ts    # WHOIS/geo proxy
-│   │       ├── stats/route.ts         # Stats proxy
-│   │       ├── top/route.ts           # Top IPs proxy
-│   │       ├── activity/route.ts      # Activity feed proxy
-│   │       └── admin/                 # Admin API proxies
-│   │           ├── feeds/route.ts     # Link feeds CRUD
-│   │           ├── bulk/route.ts      # Bulk IP extract
-│   │           ├── bulk/submit/route.ts  # Bulk IP submit
-│   │           ├── collect/route.ts   # Run collector
-│   │           └── manual_feeds/route.ts # Manual feeds list
-│   ├── components/                    # React components
-│   │   ├── ip-search.tsx              # IP search input
-│   │   ├── ip-result-panel.tsx        # Results + WHOIS + Geo + Map
-│   │   ├── stats-panel.tsx            # Stats cards
-│   │   ├── malicious-ips-table.tsx    # Top 10 malicious IPs
-│   │   ├── activity-feed.tsx          # Recent activity log
-│   │   └── dashboard-header.tsx       # Navigation header
+├── frontend2/frountend/                   # React + Vite Frontend
+│   ├── package.json                       # Node dependencies
+│   ├── vite.config.ts                     # Vite config with API proxy to Flask
+│   ├── src/
+│   │   ├── main.tsx                       # App entry point + React Router setup
+│   │   ├── pages/
+│   │   │   ├── Dashboard.tsx              # Dashboard (IP search + results)
+│   │   │   └── Admin.tsx                  # Admin panel
+│   │   └── layouts/
+│   │       └── AdminLayout.tsx            # Admin page layout
+│   ├── components/                        # React components
+│   │   ├── ip-search.tsx                  # IP search input
+│   │   ├── ip-result-panel.tsx            # Results + WHOIS + Geo + Map
+│   │   ├── stats-panel.tsx                # Stats cards
+│   │   ├── malicious-ips-table.tsx        # Top 10 malicious IPs
+│   │   ├── activity-feed.tsx              # Recent activity log
+│   │   ├── dashboard-header.tsx           # Navigation header
+│   │   └── ui/                            # shadcn/ui components
+│   ├── hooks/                             # Custom React hooks
 │   └── lib/
-│       └── backend.ts                 # Helper to proxy requests to Flask
+│       ├── backend.ts                     # Helper to proxy requests to Flask
+│       └── utils.ts                       # Utility functions
 ```
 
 ---
@@ -204,6 +210,11 @@ sudo apt update
 sudo apt install redis-server
 ```
 
+**Docker (optional):**
+```bash
+docker compose up -d
+```
+
 ### Step 2: Start Redis
 
 **Windows:**
@@ -223,6 +234,27 @@ Keep this terminal open. Redis must be running for the application to work.
 redis-cli ping
 # Should return: PONG
 ```
+# Total IPs in database
+```bash
+DBSIZE
+bash# Top 10 HIGHEST scoring IPs (most dangerous)
+ZREVRANGE ip_scores 0 9 WITHSCORES
+bash# Bottom 10 LOWEST scoring IPs (least dangerous)
+ZRANGE ip_scores 0 9 WITHSCORES
+bash# IPs with score between 70-100 (Malicious)
+ZRANGEBYSCORE ip_scores 70 100 WITHSCORES
+bash# IPs with score between 40-69 (Suspicious)
+ZRANGEBYSCORE ip_scores 40 69 WITHSCORES
+bash# IPs with score between 1-39 (Low Risk)
+ZRANGEBYSCORE ip_scores 1 39 WITHSCORES
+bash# Count of each category
+ZCOUNT ip_scores 70 100
+ZCOUNT ip_scores 40 69
+ZCOUNT ip_scores 1 39
+bash# Full details of a specific IP
+HGETALL ip:185.220.101.5
+```
+
 
 ### Step 3: Install Backend Dependencies
 
@@ -234,9 +266,10 @@ pip install -r requirements.txt
 ```
 
 This installs:
-- `flask` — Web framework for the API
+- `flask` + `flask-cors` — Web framework and CORS support
 - `redis` — Python Redis client
-- `requests` — HTTP client for fetching threat feeds
+- `schedule` — Task scheduling for periodic collection
+- `python-dotenv` — Environment variable management
 
 ### Step 4: Run the Collector (Initial Data Load)
 
@@ -274,22 +307,24 @@ curl http://localhost:5000/stats
 Open a **new terminal**:
 
 ```bash
-cd frontend/frountend
+cd frontend2/frountend
 npm install
 ```
 
 ### Step 7: Start the Frontend
 
 ```bash
-cd frontend/frountend
+cd frontend2/frountend
 npm run dev
 ```
 
-The frontend starts on `http://localhost:3000`.
+The frontend starts on `http://localhost:5173` (Vite default).
 
 **Open in browser:**
-- **Dashboard:** http://localhost:3000
-- **Admin Panel:** http://localhost:3000/admin
+- **Dashboard:** http://localhost:5173
+- **Admin Panel:** http://localhost:5173/admin
+
+The Vite dev server proxies all `/api` requests to the Flask backend on port 5000.
 
 ---
 
@@ -297,7 +332,7 @@ The frontend starts on `http://localhost:3000`.
 
 ### Dashboard (IP Lookup)
 
-**URL:** `http://localhost:3000`
+**URL:** `http://localhost:5173`
 
 1. Enter an IP address in the search bar (e.g., `94.26.106.201`)
 2. Click **"Check IP"**
@@ -316,7 +351,7 @@ The frontend starts on `http://localhost:3000`.
 
 ### Admin Panel
 
-**URL:** `http://localhost:3000/admin`
+**URL:** `http://localhost:5173/admin`
 
 The admin panel provides:
 
@@ -379,14 +414,6 @@ Fields:
   status       : "clean"           — Only set for IPs marked clean via Admin Panel
 ```
 
-### Why We Store peak_count
-
-`peak_count` is the key field that makes the scoring formula robust. It records the
-highest number of sources that ever simultaneously reported this IP. Even if feeds
-go offline or new feeds are added, `peak_count` never decreases — it only ever goes
-up when a new source finds the IP. This protects the score from unfair drops caused
-by external changes.
-
 ### Additional Redis Structures
 
 | Key | Type | Purpose |
@@ -401,8 +428,7 @@ by external changes.
 ### TTL
 All IP keys have a **7-day TTL** (604,800 seconds). Combined with the time decay
 component in the scoring formula, IPs that disappear from all feeds will gradually
-score lower AND eventually be auto-deleted from Redis — keeping the database clean
-and memory usage under control.
+score lower AND eventually be auto-deleted from Redis.
 
 ---
 
@@ -471,19 +497,41 @@ and memory usage under control.
 Final Score = (0.40 × Peak Score) + (0.40 × Current Score) + (0.20 × Decay Score)
 ```
 
+### Component Breakdown
 
-### Score Examples
+**Peak Score (40%)**
+```python
+peak_score = min(100, round(20 * math.log2(peak_count + 1)))
+```
+Uses logarithmic scale so each additional source has diminishing impact.
+Based on `peak_count` which never decreases — protects against feed instability.
+
+**Current Score (40%)**
+```python
+absolute = min(100, round(20 * math.log2(source_count + 1)))
+relative = min(100, round((source_count / total_feeds) * 100))
+current_score = round((0.5 * absolute) + (0.5 * relative))
+```
+Combines absolute count (log scale) with relative spread (ratio) equally.
+
+**Time Decay (20%)**
+```python
+days_since = (now - last_seen_timestamp) / 86400
+decay_score = max(0, round(100 * (1 - (days_since / 30))))
+```
+Linearly decays from 100 to 0 over 30 days of silence.
+
+### Score Reference Table
 
 | Peak | Current | Days Ago | Score | Verdict |
 |------|---------|----------|-------|---------|
-| 1 | 1 | 0 | 36 | Low Risk |
-| 2 | 2 | 0 | 50 | Suspicious |
-| 3 | 3 | 0 | 57 | Suspicious |
-| 5 | 5 | 0 | 70 | Malicious |
-| 8 | 8 | 0 | 82 | Malicious |
-| 8 | 8 | 15 | 72 | Malicious |
-| 8 | 0 | 30 | 32 | Low Risk |
-| 3 | 2 | 0 | 52 | Suspicious |
+| 1 | 1 | 0 | ~36 | Low Risk |
+| 2 | 2 | 0 | ~50 | Suspicious |
+| 3 | 3 | 0 | ~57 | Suspicious |
+| 5 | 5 | 0 | ~70 | Malicious |
+| 8 | 8 | 0 | ~82 | Malicious |
+| 8 | 8 | 15 | ~72 | Malicious |
+| 8 | 0 | 30 | ~32 | Low Risk |
 
 ---
 
@@ -524,12 +572,6 @@ netstat -ano | findstr 5000
 taskkill /F /PID <pid>
 ```
 
-### Frontend `npm run dev` fails with env variable error
-If you see `'NEXT_TELEMETRY_DISABLED' is not recognized`, update `package.json` scripts to:
-```json
-"dev": "next dev --webpack"
-```
-
 ### `hset` mapping error (old Redis versions)
 If Redis throws `wrong number of arguments for 'hset' command`, your Redis version
 does not support multi-field HSET. Use individual `hset` calls per field instead.
@@ -545,8 +587,8 @@ Some feeds may be temporarily down or rate-limited. The collector continues with
 available feeds and logs errors for failed ones. This is expected behaviour.
 
 ### Frontend can't connect to backend
-Ensure Flask is running on `http://127.0.0.1:5000`. The Next.js frontend proxies
-all API calls to Flask via route handlers.
+Ensure Flask is running on `http://127.0.0.1:5000`. The Vite dev server proxies
+all `/api` requests to Flask via the proxy config in `vite.config.ts`.
 
 ---
 
@@ -563,11 +605,11 @@ python -c "from collector import run_collector; print(run_collector())"
 python api.py
 
 # Terminal 3: Start Frontend
-cd frontend/frountend
+cd frontend2/frountend
 npm install
 npm run dev
 
 # Open browser
-# Dashboard: http://localhost:3000
-# Admin:     http://localhost:3000/admin
+# Dashboard: http://localhost:5173
+# Admin:     http://localhost:5173/admin
 ```
