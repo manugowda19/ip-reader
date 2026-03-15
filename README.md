@@ -266,23 +266,32 @@ Keep this terminal open. Redis must be running for the application to work.
 redis-cli ping
 # Should return: PONG
 ```
-# Total IPs in database
 ```bash
+
+Total IPs in database
+
 DBSIZE
+
 bash# Top 10 HIGHEST scoring IPs (most dangerous)
 ZREVRANGE ip_scores 0 9 WITHSCORES
+
 bash# Bottom 10 LOWEST scoring IPs (least dangerous)
 ZRANGE ip_scores 0 9 WITHSCORES
+
 bash# IPs with score between 70-100 (Malicious)
 ZRANGEBYSCORE ip_scores 70 100 WITHSCORES
+
 bash# IPs with score between 40-69 (Suspicious)
 ZRANGEBYSCORE ip_scores 40 69 WITHSCORES
+
 bash# IPs with score between 1-39 (Low Risk)
 ZRANGEBYSCORE ip_scores 1 39 WITHSCORES
+
 bash# Count of each category
 ZCOUNT ip_scores 70 100
 ZCOUNT ip_scores 40 69
 ZCOUNT ip_scores 1 39
+
 bash# Full details of a specific IP
 HGETALL ip:185.220.101.5
 ```
