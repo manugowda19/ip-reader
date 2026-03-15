@@ -150,37 +150,69 @@ redis-server --version  # Should show 5+
 ## Project Structure
 
 ```
-ip-reader-main/
-├── README.md                              # This file
-├── docker-compose.yml                     # Optional: Redis via Docker
+ip-reader/
+├── README.md                          # Project documentation
+├── docker-compose.yml                 # Optional: Redis via Docker
+├── dump.rdb                           # Redis data snapshot
+├── .gitignore
 │
-├── backend/                               # Flask API + Collector
-│   ├── api.py                             # Main Flask server (all API endpoints)
-│   ├── collector.py                       # Feed fetcher + Redis storage logic
-│   └── requirements.txt                   # Python dependencies
+├── backend/                           # Python Backend
+│   ├── api.py                         # Flask REST API (all endpoints)
+│   ├── collector.py                   # Feed fetcher + Redis storage + scoring
+│   ├── requirements.txt               # Python dependencies
+│   └── package-lock.json
 │
-├── frontend2/frountend/                   # React + Vite Frontend
-│   ├── package.json                       # Node dependencies
-│   ├── vite.config.ts                     # Vite config with API proxy to Flask
-│   ├── src/
-│   │   ├── main.tsx                       # App entry point + React Router setup
-│   │   ├── pages/
-│   │   │   ├── Dashboard.tsx              # Dashboard (IP search + results)
-│   │   │   └── Admin.tsx                  # Admin panel
-│   │   └── layouts/
-│   │       └── AdminLayout.tsx            # Admin page layout
-│   ├── components/                        # React components
-│   │   ├── ip-search.tsx                  # IP search input
-│   │   ├── ip-result-panel.tsx            # Results + WHOIS + Geo + Map
-│   │   ├── stats-panel.tsx                # Stats cards
-│   │   ├── malicious-ips-table.tsx        # Top 10 malicious IPs
-│   │   ├── activity-feed.tsx              # Recent activity log
-│   │   ├── dashboard-header.tsx           # Navigation header
-│   │   └── ui/                            # shadcn/ui components
-│   ├── hooks/                             # Custom React hooks
-│   └── lib/
-│       ├── backend.ts                     # Helper to proxy requests to Flask
-│       └── utils.ts                       # Utility functions
+└── frountend/                         # Next.js + React Frontend
+    ├── index.html                     # App entry point
+    ├── package.json                   # Node dependencies
+    ├── package-lock.json
+    ├── pnpm-lock.yaml
+    ├── tsconfig.json                  # TypeScript config
+    ├── vite.config.ts                 # Vite bundler config
+    ├── vite-env.d.ts
+    ├── postcss.config.mjs
+    ├── components.json                # shadcn/ui config
+    ├── .env.example                   # Environment variables template
+    │
+    ├── app/
+    │   └── globals.css                # Global styles
+    │
+    ├── src/
+    │   ├── main.tsx                   # React entry point
+    │   ├── pages/
+    │   │   ├── Dashboard.tsx          # IP search + results page
+    │   │   └── Admin.tsx              # Admin panel page
+    │   └── layouts/
+    │       └── AdminLayout.tsx        # Admin page layout wrapper
+    │
+    ├── components/
+    │   ├── ip-search.tsx              # IP search input component
+    │   ├── ip-result-panel.tsx        # Score + sources + WHOIS + map
+    │   ├── stats-panel.tsx            # Stats cards (total, malicious, clean)
+    │   ├── malicious-ips-table.tsx    # Top 10 malicious IPs table
+    │   ├── activity-feed.tsx          # Recent lookup activity log
+    │   ├── dashboard-header.tsx       # Navigation header
+    │   ├── theme-provider.tsx         # Dark/light theme provider
+    │   └── ui/                        # shadcn/ui component library
+    │       ├── button.tsx
+    │       ├── card.tsx
+    │       ├── table.tsx
+    │       ├── badge.tsx
+    │       ├── input.tsx
+    │       ├── dialog.tsx
+    │       ├── tabs.tsx
+    │       └── ...and more
+    │
+    ├── lib/
+    │   ├── backend.ts                 # Flask API proxy helper
+    │   └── utils.ts                   # Shared utilities
+    │
+    ├── hooks/
+    │   ├── use-mobile.ts              # Mobile detection hook
+    │   └── use-toast.ts               # Toast notification hook
+    │
+    └── styles/
+        └── globals.css                # Additional global styles
 ```
 
 ---
